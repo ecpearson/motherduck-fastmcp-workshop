@@ -9,12 +9,12 @@ from collections import Counter, defaultdict
 from statistics import median
 from typing import Annotated, Literal
 
-from fastmcp import FastMCP
+from fastmcp import Context, FastMCP
 from fastmcp.exceptions import ToolError
 from pydantic import Field
 
 from sf311.data import BY_ID, LOCAL_NAMES, NEIGHBORHOODS, REQUESTS, SERVICES, Request, closest
-from sf311.kit import caller_email
+from sf311.kit import ask_choice, caller_email, read_choice
 
 mcp = FastMCP("sf-311")
 
@@ -30,6 +30,9 @@ GROUPS = {
     "source": lambda r: r.source,
     "weekday": lambda r: r.opened.strftime("%A"),
     "status": lambda r: r.status,
+}
+LOCAL_NAME_AREAS: dict[str, list[str]] = {
+    name: sorted({r.neighborhood for r in REQUESTS if r.local_name == name and r.neighborhood}) for name in LOCAL_NAMES
 }
 
 
@@ -143,6 +146,55 @@ def count_requests(
         return len(rows)
     key = GROUPS[group_by]
     return _ranked(Counter(key(r) for r in rows if key(r)))
+
+
+@mcp.tool(annotations=READ_ONLY)
+def count_in_neighborhood(
+    ctx: Context,
+    name: str,
+    boundary: str | None = None,
+) -> int | str | dict:
+    """Count 311 requests in a neighborhood, official or local.
+
+    `name` can be one of the 41 official neighborhoods or one of the local
+    names people actually use, such as "Lower Nob Hill". A local name that
+    spans several official neighborhoods asks which part to count, unless
+    `boundary` is given: one of the overlapped neighborhoods, or "all" for
+    the whole local area. Use dataset_info for the exact names accepted.
+    """
+    if name in NEIGHBORHOODS:
+        return len(_matching(None, name))
+
+    areas = LOCAL_NAME_AREAS.get(name)
+    if areas is None:
+        valid = sorted(set(NEIGHBORHOODS) | set(LOCAL_NAMES))
+        suggestions = ", ".join(closest(name, valid)) or "call dataset_info for the full list"
+        raise ToolError(f"Unknown neighborhood {name!r}. Did you mean: {suggestions}?")
+
+    in_area = [r for r in REQUESTS if r.local_name == name]
+    if len(areas) <= 1:
+        return len(in_area)
+
+    all_choice = f"All of {name}"
+
+    def resolve(choice: str) -> int:
+        if choice == all_choice:
+            return len(in_area)
+        return sum(1 for r in in_area if r.neighborhood == choice)
+
+    if boundary is not None:
+        if boundary == "all":
+            return len(in_area)
+        _check(boundary, areas, "boundary")
+        return resolve(boundary)
+
+    answer = read_choice(ctx, "boundary")
+    if answer is None:
+        message = f"{name} spans {', '.join(areas)}. Which part should I count?"
+        return ask_choice("boundary", message, areas + [all_choice])
+    if not answer.accepted:
+        return f"Nothing counted: declined to choose a part of {name}."
+    return resolve(answer.value)
 
 
 @mcp.tool(annotations=READ_ONLY)
