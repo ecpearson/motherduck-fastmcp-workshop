@@ -3,6 +3,8 @@
 FastMCP Gateway runs this file. Its entrypoint setting is `server.py:mcp`.
 """
 
+import logging
+import re
 from collections import Counter, defaultdict
 from statistics import median
 from typing import Annotated, Literal
@@ -12,11 +14,15 @@ from fastmcp.exceptions import ToolError
 from pydantic import Field
 
 from sf311.data import BY_ID, LOCAL_NAMES, NEIGHBORHOODS, REQUESTS, SERVICES, Request, closest
+from sf311.kit import caller_email
 
 mcp = FastMCP("sf-311")
 
+logger = logging.getLogger(__name__)
+
 READ_ONLY = {"readOnlyHint": True}
 MAX_ROWS = 50
+HOUSE_NUMBER = re.compile(r"^(\d+)\s+([^,]+)")
 GROUPS = {
     "neighborhood": lambda r: r.neighborhood,
     "service": lambda r: r.service,
@@ -49,6 +55,21 @@ def _ranked(counter: Counter) -> dict[str, int]:
     return dict(sorted(counter.items(), key=lambda item: (-item[1], item[0]))[:MAX_ROWS])
 
 
+def _masked(request: Request) -> dict:
+    """request.as_dict(), with the street address rounded down to its block.
+
+    "994 HARRISON ST, SAN FRANCISCO, CA 94107, US" becomes "900 block of
+    HARRISON ST". An address with no house number, such as an intersection,
+    is left as it is.
+    """
+    row = request.as_dict()
+    match = HOUSE_NUMBER.match(row["address"])
+    if match:
+        block = int(match.group(1)) // 100 * 100
+        row["address"] = f"{block} block of {match.group(2).strip()}"
+    return row
+
+
 @mcp.resource("resource://dataset/columns", mime_type="application/json")
 def dataset_columns() -> dict:
     """Describe the fields on every request dict returned by the tools above.
@@ -65,7 +86,7 @@ def dataset_columns() -> dict:
         "agency": "The city team that owns the request.",
         "neighborhood": "One of the city's 41 official analysis neighborhoods, or '' when unknown.",
         "local_name": "The name people use for the area, such as 'Lower Nob Hill'. It can span several official neighborhoods.",
-        "address": "Where the problem is.",
+        "address": "Where the problem is, masked to the block, such as '900 block of HARRISON ST'. Intersections have no house number and are left as they are.",
         "source": "How it was filed: 'Mobile', 'Web', 'Phone', and others.",
     }
 
@@ -101,7 +122,7 @@ def search_requests(
     which answers in one call without listing rows.
     """
     rows = sorted(_matching(service, neighborhood, status), key=lambda r: r.opened, reverse=True)
-    return [r.as_dict() for r in rows[:limit]]
+    return [_masked(r) for r in rows[:limit]]
 
 
 @mcp.tool(annotations=READ_ONLY)
@@ -152,7 +173,8 @@ def get_request(request_id: str) -> dict:
     request = BY_ID.get(request_id)
     if request is None:
         raise ToolError(f"No request with ID {request_id!r}. Use search_requests to find IDs.")
-    return request.as_dict()
+    logger.info("get_request %s requested by %s", request_id, caller_email() or "local")
+    return _masked(request)
 
 
 if __name__ == "__main__":
