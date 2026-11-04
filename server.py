@@ -49,6 +49,27 @@ def _ranked(counter: Counter) -> dict[str, int]:
     return dict(sorted(counter.items(), key=lambda item: (-item[1], item[0]))[:MAX_ROWS])
 
 
+@mcp.resource("resource://dataset/columns", mime_type="application/json")
+def dataset_columns() -> dict:
+    """Describe the fields on every request dict returned by the tools above.
+
+    Read this before guessing a field name or grouping to filter or sort by.
+    """
+    return {
+        "request_id": "The request's ID. Pass this to get_request.",
+        "opened": "When the request was filed, in San Francisco local time, as an ISO 8601 string.",
+        "closed": "When the request was closed, as an ISO 8601 string, or null while it is open.",
+        "status": "'Open' or 'Closed'.",
+        "service": "What the request is about, such as 'Graffiti Public'. Call dataset_info for the full list.",
+        "subtype": "A finer category within service.",
+        "agency": "The city team that owns the request.",
+        "neighborhood": "One of the city's 41 official analysis neighborhoods, or '' when unknown.",
+        "local_name": "The name people use for the area, such as 'Lower Nob Hill'. It can span several official neighborhoods.",
+        "address": "Where the problem is.",
+        "source": "How it was filed: 'Mobile', 'Web', 'Phone', and others.",
+    }
+
+
 @mcp.tool(annotations=READ_ONLY)
 def dataset_info() -> dict:
     """Describe the 311 dataset this server answers questions about.
